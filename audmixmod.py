@@ -2712,76 +2712,19 @@ class AIProcessor:
         
         analysis_prompt = prompt or default_prompt
         return self.provider.analyze_audio(analysis_prompt)
-    
-    def darunia_mode(self, audio_analysis: Dict, transformations_applied: Dict) -> None:
+
+    def darunia_mode(self, audio_analysis: Dict, transformations_applied: Dict, ai_mode=False, ai_model=None, audio_bytes=None) -> None:
         """🎵 DARUNIA MODE: The Goron King grooves to your audio! 🎵"""
         import time
         import random
-        
+        import sys
         # Darunia's dancing phases
         dance_frames = [
-            """\033[32m
-        🎵  ♪ ♫ ♪ ♫  🎵
-       ╔═══════════════╗
-    🔥 ║  DARUNIA THE  ║ 🔥
-       ║  GORON KING   ║
-       ╚═══════════════╝
-         ╔═══════════╗
-         ║ (◔ ◡ ◔)   ║  Brother! This
-         ║  \\  o  //   ║  sound makes my
-         ║   \\ _ //    ║  soul DANCE!
-         ╚═══════════╝
-          /|\\   /|\\
-         🏔️     🏔️
-    \033[0m""",
-            
-            """\033[33m
-        🎶  ♪ ♫ ♪ ♫  🎶
-       ╔═══════════════╗
-    🔥 ║  DARUNIA THE  ║ 🔥
-       ║  GORON KING   ║
-       ╚═══════════════╝
-         ╔═══════════╗
-         ║ (◕ ‿ ◕)   ║  The rhythm
-         ║    |o|     ║  flows through
-         ║   // \\\\    ║  my rocky heart!
-         ╚═══════════╝
-          🏔️\\   //🏔️
-         ~~\\     //~~
-    \033[0m""",
-            
-            """\033[35m
-        🎵  ♪ ♫ ♪ ♫  🎵
-       ╔═══════════════╗
-    🔥 ║  DARUNIA THE  ║ 🔥
-       ║  GORON KING   ║
-       ╚═══════════════╝
-         ╔═══════════╗
-         ║ (★ ω ★)   ║  PURE BLISS,
-         ║   \\|o|//   ║  Brother! This
-         ║    \\o//    ║  is NIRVANA!
-         ╚═══════════╝
-            |   |
-         🏔️ ~~|~~🏔️
-    \033[0m""",
-            
-            """\033[36m
-        🎶  ♪ ♫ ♪ ♫  🎶
-       ╔═══════════════╗
-    🔥 ║  DARUNIA THE  ║ 🔥
-       ║  GORON KING   ║
-       ╚═══════════════╝
-         ╔═══════════╗
-         ║ (◉ ◡ ◉)   ║  My socks have
-         ║    |o|     ║  ASCENDED to
-         ║   /| |\\    ║  Saturn! 🪐
-         ╚═══════════╝
-          //   \\\\
-         🏔️     🏔️
-    \033[0m"""
+            "\033[32m\n    🎵  ♪ ♫ ♪ ♫  🎵\n   ╔═══════════════╗\n🔥 ║  DARUNIA THE  ║ 🔥\n   ║  GORON KING   ║\n   ╚═══════════════╝\n     ╔═══════════╗\n     ║ (◔ ◡ ◔)   ║  Brother! This\n     ║  \\\\  o  //   ║  sound makes my\n     ║   \\\\ _ //    ║  soul DANCE!\n     ╚═══════════╝\n      /|\\   /|\\\n     🏔️     🏔️\n\033[0m",
+            "\033[33m\n    🎶  ♪ ♫ ♪ ♫  🎶\n   ╔═══════════════╗\n🔥 ║  DARUNIA THE  ║ 🔥\n   ║  GORON KING   ║\n   ╚═══════════════╝\n     ╔═══════════╗\n     ║ (◕ ‿ ◕)   ║  The rhythm\n     ║    |o|     ║  flows through\n     ║   // \\\\\\\\    ║  my rocky heart!\n     ╚═══════════╝\n      🏔️\\\\   //🏔️\n     ~~\\\\     //~~\n\033[0m",
+            "\033[35m\n    🎵  ♪ ♫ ♪ ♫  🎵\n   ╔═══════════════╗\n🔥 ║  DARUNIA THE  ║ 🔥\n   ║  GORON KING   ║\n   ╚═══════════════╝\n     ╔═══════════╗\n     ║ (★ ω ★)   ║  PURE BLISS,\n     ║   \\\\|o|//   ║  Brother! This\n     ║    \\\\o//    ║  is NIRVANA!\n     ╚═══════════╝\n        |   |\n     🏔️ ~~|~~🏔️\n\033[0m",
+            "\033[36m\n    🎶  ♪ ♫ ♪ ♫  🎶\n   ╔═══════════════╗\n🔥 ║  DARUNIA THE  ║ 🔥\n   ║  GORON KING   ║\n   ╚═══════════════╝\n     ╔═══════════╗\n     ║ (◉ ◡ ◉)   ║  My socks have\n     ║    |o|     ║  ASCENDED to\n     ║   /| |\\\\    ║  Saturn! 🪐\n     ╚═══════════╝\n      //   \\\\\\\\\n     🏔️     🏔️\n\033[0m"
         ]
-        
-        # Darunia's ecstatic proclamations
         proclamations = [
             "Brother! This groove has awakened my GORON SOUL!",
             "By the sacred stones! My very essence VIBRATES with joy!",
@@ -2789,85 +2732,38 @@ class AIProcessor:
             "Brother, you've created PURE AUDITORY BLISS!",
             "My rocky heart is MELTING with euphoria!",
             "This is better than a thousand rolling competitions!",
-            "The spirits of the ancient Gorons are dancing in my bones!",
-            "Brother! You've unlocked the SECRET FREQUENCY OF HAPPINESS!"
+            "The spirits of the ancestors are headbanging in their caverns!"
         ]
-        
-        # Calculate bliss intensity based on transformations
-        bliss_intensity = 1
-        if transformations_applied.get('time_stretch', 1.0) != 1.0:
-            bliss_intensity += 0.5
-        if transformations_applied.get('pitch_shift', 0) != 0:
-            bliss_intensity += 0.3
-        if transformations_applied.get('harmonic_only'):
-            bliss_intensity += 0.4
-        if transformations_applied.get('granular_synthesis'):
-            bliss_intensity += 0.8
-        
-        # Start the show with proper spacing
-        print("\n" + "="*60)
-        print("\033[1;32m🎵 DARUNIA MODE ACTIVATED! 🎵\033[0m")
-        print("="*60 + "\n")
-        time.sleep(1)
-        
-        # Dancing animation - pure append mode, no cursor tricks!
-        for i in range(int(bliss_intensity * 2)):  # Reduced iterations for speed
-            frame = dance_frames[i % len(dance_frames)]
-            proclamation = random.choice(proclamations)
-            
-            print(f"\033[1;36m--- DANCE FRAME {i+1} ---\033[0m")
+        n_frames = len(dance_frames)
+        print("\n" * (n_frames+2), end="")
+        print(f"\033[{n_frames+2}A", end="")  # Move up to reserved region
+        sys.stdout.flush()
+        for i, frame in enumerate(dance_frames):
+            print(f"\033[{n_frames+2}A", end="")  # Up to top of reserved
+            print("\n" * i, end="")              # Down to current line
             print(frame)
-            print(f"\033[1;33m{proclamation}\033[0m")
-            print("\n" + "-"*50 + "\n")
-            time.sleep(0.6)  # Slightly faster
-        
-        # Final wisdom section
-        print("""\033[1;36m
-       ╔═══════════════════════════════╗
-    🔥 ║     DARUNIA'S WISDOM         ║ 🔥
-       ╚═══════════════════════════════╝
-         ╔═════════════════════════╗
-         ║ (◕ ◡ ◕) Thank you,     ║  
-         ║          Brother!       ║  
-         ║   Two tips for you:     ║  
-         ╚═════════════════════════╝
-    \033[0m""")
-        
-        # Generate contextual tips based on what they did
-        tips = []
-        if transformations_applied.get('harmonic_only'):
-            tips.append("🎵 Try combining --harmonic-only with --spectral-centroid-shift 0.3 for celestial shimmer!")
+            time.sleep(0.45)
+        print(f"\033[{n_frames+2}B", end="")  # Down out of reserved lines
+        sys.stdout.flush()
+        if ai_mode and ai_model:
+            darunia_prompt = (
+                "You are Darunia, the Goron King from Zelda. Analyze the audio (stats below) and the audio file. "
+                "Describe in passionate, over-the-top style what you 'hear.' Is this song or just sound/noise? Then, "
+                "list 20+ personalized flag/option recommendations to improve the audio to your own Goron taste! "
+                "Recommend only flags the program supports and be very creative."
+            )
+            input_data = {"stats": audio_analysis, "transforms": transformations_applied, "audio_bytes": audio_bytes}
+            tirade = ai_model.ask(darunia_prompt, input_data)  # AI model must implement .ask()
+            print(tirade)
         else:
-            tips.append("🎵 For ethereal vibes, try --harmonic-only --time-stretch 2.0!")
-            
-        if transformations_applied.get('granular_synthesis'):
-            tips.append("🎶 Granular synthesis + pitch shifting = interdimensional portal sounds!")
-        else:
-            tips.append("🎶 Add --granular-synthesis for textures that'll make your ears tingle!")
-            
-        if not tips:
-            tips = [
-                "🎵 Try --random-transform for a surprise journey through sonic dimensions!",
-                "🎶 Use --ai-enhance='make it sound underwater' for aquatic adventures!"
-            ]
-        
-        for tip in tips[:2]:
-            print(f"\033[1;32m{tip}\033[0m")
-            time.sleep(1.5)
-        
-        print("\n\033[1;35m🎉 Darunia: 'I'm off to the races, Brother! May your audio adventures be LEGENDARY!' ✨🌟✨\033[0m")
-        time.sleep(1)
-        
-        # Simple sparkly exit - no overwriting!
-        sparkles = "✨🌟⭐💫✨🌟⭐💫✨🌟⭐💫"
-        print("\n🎆 Grand Finale: ", end='')
-        for sparkle in sparkles:
-            print(f"\033[1;{random.randint(31,37)}m{sparkle}\033[0m", end='', flush=True)
-            time.sleep(0.05)  # Faster sparkles
-        
-        print("\n\n\033[1;32m🎵 *POOF* 🎵\033[0m")
-        print("\n🎆 Darunia fades away with a satisfied grin. Your output is safe, Brother! 🎆")
-        print("\n" + "="*60 + "\n")
+            print(random.choice(proclamations) + "\n")
+        print("🪨 Darunia's Groove Report 🪨")
+        print("-" * 32)
+        for key, value in audio_analysis.items():
+            print(f"{key.capitalize()}: {value}")
+        print("Applied transformations:", ", ".join(transformations_applied.keys()))
+        print("="*50)
+        print("🎵 Darunia mode complete. Return to normal workflow! 🎵\n")
 
 def create_random_transforms() -> Dict:
     """Generate random transformation parameters for experimentation"""
@@ -2892,6 +2788,26 @@ def create_random_transforms() -> Dict:
         transforms[effect_name] = value_generator()
     
     return transforms
+
+def get_ai_advice_pre(model, audio_path, user_prompt, proposed_flags):
+    prompt = (
+        "You are an audio AI advisor. Given this user purpose and proposed flag chain, do these flags make sense for this kind of audio? "
+        "What would the output sound like if used? Be detailed, and recommend alternatives if needed."
+    )
+    with open(audio_path, "rb") as f:
+        audio_bytes = f.read(80000)
+    advice = model.ask(prompt, {"audio_bytes": audio_bytes, "user_prompt": user_prompt, "flags": proposed_flags})
+    return advice
+
+def get_ai_advice_post(model, audio_path, user_prompt, proposed_flags, analysis_data):
+    prompt = (
+        "You are an audio AI advisor. Here is an audio analysis and user purpose. Given the proposed flags/chain, do these make sense? "
+        "Describe how the audio will change, suggest improvements, and rate the flag set."
+    )
+    with open(audio_path, "rb") as f:
+        audio_bytes = f.read(80000)
+    advice = model.ask(prompt, {"audio_bytes": audio_bytes, "user_prompt": user_prompt, "flags": proposed_flags, "analysis": analysis_data})
+    return advice
 
 def load_config_file(config_path: str) -> Dict:
     """Load configuration from JSON file"""
