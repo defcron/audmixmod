@@ -2208,7 +2208,7 @@ Examples:
     parser.add_argument('--config-file', help='Load settings from JSON config file')
     parser.add_argument('--preset-file', help='Preset file path')
     parser.add_argument('--preset-name', help='Preset name to load/save')
-    parser.add_argument('--save-preset', help='Save current settings as preset')
+    parser.add_argument('--save-preset', help='Save current settings as preset (without processing)')
     parser.add_argument('--random-transform', action='store_true', help='Apply random transformations')
     
     # Output formats
@@ -2410,8 +2410,11 @@ Examples:
         if args.save_preset:
             # Save current settings as preset
             transforms = collect_transforms(args)
+            preprocess_config = collect_preprocessing(args)
+            # Merge transforms and preprocessing for preset saving
+            all_settings = {**transforms, **preprocess_config}
             converter = AudMixMod(config=config)
-            converter.create_preset(args.preset_name, transforms, args.preset_file)
+            converter.create_preset(args.preset_name, all_settings, args.preset_file)
             return
         else:
             # Load preset
