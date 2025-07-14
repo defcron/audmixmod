@@ -1,7 +1,7 @@
 # audmixmod - The Ultimate Audio Analysis & Transformation Tool
 *designed and developed by Claude Sonnet 4 [https://claude.ai](https://claude.ai) and Jeremy Carter <jeremy@jeremycarter.ca>*
 
-**audmixmod** is a comprehensive audio processing powerhouse that converts audio files to MusicXML format while providing extensive audio transformations, AI-powered hearing features, and professional-grade analysis capabilities. Think of it as the Swiss Army knife for audio analysis, transcription, and creative sound manipulation.
+**audmixmod** is a comprehensive audio processing powerhouse that converts audio files to MusicXML format (amongst others) while providing extensive audio transformations, AI-powered hearing features, and professional-grade analysis capabilities, as well as AI-driven audio analysis, program usage suggestions, audio engineering recommendations, and some artifically intelligent DSP routines. Think of it as the Swiss Navy tool belt for audio analysis, transcription, and creative sound manipulation. It is a new project and so it may not work completely as mentioned, and so if you notice something from this documentation that's missing from the program or doesn't work properly, filing an issue would be helpful and is encouraged.
 
 ## 🚀 Features Overview
 
@@ -57,7 +57,7 @@ For AI-powered features, configure your provider and credentials:
 ```bash
 # Choose your AI provider
 export MODEL_PROVIDER="anthropic"  # or: openai, chatgpt, claude.ai, local, custom
-export MODEL_NAME="claude-3-sonnet-20240229"  # or: gpt-4, gpt-4-turbo, etc.
+export MODEL_NAME="claude-3-haiku-20240307"  # or: gpt-4o, gpt-4o-mini, etc.
 
 # Anthropic/Claude API (recommended)
 export ANTHROPIC_API_KEY="sk-ant-your-key-here"
@@ -309,7 +309,7 @@ Get intelligent insights about your audio:
 
 # Override provider and model for this session
 ./audmixmod.py song.wav --ai-enabled --ai-analyze \
-  --model-provider openai --model-name gpt-4-turbo
+  --model-provider openai --model-name gpt-4o
 
 # Use a Custom GPT trained for audio analysis
 ./audmixmod.py song.wav --ai-enabled --ai-analyze \
@@ -412,7 +412,7 @@ The ultimate audio celebration experience! The Goron King himself will dance to 
 ```bash
 # Provider Selection
 export MODEL_PROVIDER="anthropic"     # anthropic, openai, chatgpt, claude.ai, local, custom
-export MODEL_NAME="claude-3-sonnet-20240229"  # Specific model name
+export MODEL_NAME="claude-3-haiku-20240307"  # Specific model name
 
 # Official APIs
 export ANTHROPIC_API_KEY="sk-ant-..."
@@ -429,7 +429,7 @@ export CUSTOM_AI_CONFIG_FILE="/path/to/config.json"
 
 # Custom GPT examples
 export MODEL_NAME="gpt-4o-gizmo-g-AudioAnalyzer123"  # Your Custom GPT
-export MODEL_NAME="gpt-4-turbo"                     # Standard GPT-4
+export MODEL_NAME="chatgpt-4o-latest"                     # ChatGPT-4o (The ChatGPT.com version of GPT-4o)
 
 # Local LLM examples
 export MODEL_PROVIDER="local"
@@ -805,3 +805,5 @@ Built with amazing open-source libraries:
 ---
 
 **audmixmod** - Where audio meets intelligence. Transform, analyze, and create like never before! 🎵✨
+
+~ Claude Sonnet 4
