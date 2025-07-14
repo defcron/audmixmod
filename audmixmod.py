@@ -36,6 +36,17 @@ import multiprocessing as mp
 from datetime import datetime
 import requests
 import warnings
+import re
+import os
+from typing import Optional, Dict, Any
+try:
+    import anthropic
+except ImportError:
+    anthropic = None
+try:
+    import openai
+except ImportError:
+    openai = None
 warnings.filterwarnings('ignore')
 
 class AudMixMod:
@@ -47,6 +58,41 @@ class AudMixMod:
         self.processing_stats = {}
         self.original_channels = 1
         self.original_format = None
+        
+        # Initialize AI processor
+        self.ai_processor = AIProcessor(config) if config.get('ai_enabled') else None
+        
+    def _sanitize_filename(self, filename: str) -> str:
+        """Sanitize filename for cross-platform compatibility"""
+        # Remove/replace invalid characters for Windows/Unix filesystems
+        sanitized = re.sub(r'[<>:"/\\|?*]', '_', filename)
+        # Remove control characters
+        sanitized = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', sanitized)
+        # Trim whitespace and dots from ends
+        sanitized = sanitized.strip(' .')
+        # Ensure it's not empty and not too long
+        if not sanitized:
+            sanitized = 'audio_file'
+        if len(sanitized) > 200:  # Leave room for extensions and suffixes
+            sanitized = sanitized[:200]
+        return sanitized
+        
+    def _ensure_json_serializable(self, obj):
+        """Recursively convert numpy types to native Python types for JSON serialization"""
+        if isinstance(obj, np.integer):
+            return int(obj)
+        elif isinstance(obj, np.floating):
+            return float(np.nan_to_num(obj, nan=0.0, posinf=1e10, neginf=-1e10))
+        elif isinstance(obj, np.ndarray):
+            return [self._ensure_json_serializable(item) for item in obj.tolist()]
+        elif isinstance(obj, dict):
+            return {key: self._ensure_json_serializable(value) for key, value in obj.items()}
+        elif isinstance(obj, list):
+            return [self._ensure_json_serializable(item) for item in obj]
+        elif isinstance(obj, tuple):
+            return tuple(self._ensure_json_serializable(item) for item in obj)
+        else:
+            return obj
         
     def load_audio(self, file_path: str, user_sample_rate: Optional[int] = None, 
                    preserve_stereo: bool = True) -> Tuple[np.ndarray, bool]:
@@ -233,8 +279,26 @@ class AudMixMod:
             if self.config.get('verbose'):
                 print(f"  Time stretching by factor {rate}")
             if processed_audio.ndim == 2:
+                # Store original shape for length matching
+                original_length = processed_audio.shape[1]
+                expected_length = int(original_length / rate)  # Expected output length
+                
+                stretched_channels = []
                 for channel in range(processed_audio.shape[0]):
-                    processed_audio[channel] = librosa.effects.time_stretch(processed_audio[channel], rate=rate)
+                    stretched = librosa.effects.time_stretch(processed_audio[channel], rate=rate)
+                    
+                    # Ensure consistent length across all channels
+                    if len(stretched) != expected_length:
+                        if len(stretched) > expected_length:
+                            stretched = stretched[:expected_length]
+                        else:
+                            pad_length = expected_length - len(stretched)
+                            stretched = np.pad(stretched, (0, pad_length), mode='constant')
+                    
+                    stretched_channels.append(stretched)
+                
+                # Reconstruct stereo array with consistent shape
+                processed_audio = np.array(stretched_channels)
             else:
                 processed_audio = librosa.effects.time_stretch(processed_audio, rate=rate)
         
@@ -243,9 +307,25 @@ class AudMixMod:
             if self.config.get('verbose'):
                 print(f"  Pitch shifting by {steps} semitones")
             if processed_audio.ndim == 2:
+                # Store original shape for consistent length handling
+                original_length = processed_audio.shape[1]
+                
+                shifted_channels = []
                 for channel in range(processed_audio.shape[0]):
-                    processed_audio[channel] = librosa.effects.pitch_shift(
+                    shifted = librosa.effects.pitch_shift(
                         processed_audio[channel], sr=self.sample_rate, n_steps=steps)
+                    
+                    # Ensure consistent length (pitch_shift can also change length slightly)
+                    if len(shifted) != original_length:
+                        if len(shifted) > original_length:
+                            shifted = shifted[:original_length]
+                        else:
+                            pad_length = original_length - len(shifted)
+                            shifted = np.pad(shifted, (0, pad_length), mode='constant')
+                    
+                    shifted_channels.append(shifted)
+                
+                processed_audio = np.array(shifted_channels)
             else:
                 processed_audio = librosa.effects.pitch_shift(processed_audio, sr=self.sample_rate, n_steps=steps)
         
@@ -358,6 +438,7 @@ class AudMixMod:
     
     def _apply_spectral_transforms(self, audio_channel: np.ndarray, transforms: Dict) -> np.ndarray:
         """Apply spectral transformations to a single audio channel"""
+        original_length = len(audio_channel)
         stft = librosa.stft(audio_channel, hop_length=self.hop_length, n_fft=self.frame_length)
         magnitude = np.abs(stft)
         phase = np.angle(stft)
@@ -367,9 +448,16 @@ class AudMixMod:
             if self.config.get('verbose'):
                 print(f"    Shifting spectral centroid by {shift}")
             freqs = librosa.fft_frequencies(sr=self.sample_rate, n_fft=self.frame_length)
-            centroid = np.sum(freqs[:, np.newaxis] * magnitude, axis=0) / (np.sum(magnitude, axis=0) + 1e-8)
+            magnitude_sum = np.sum(magnitude, axis=0)
+            # Robust centroid calculation with silence detection
+            magnitude_sum = np.maximum(magnitude_sum, 1e-10)  # Prevent true zeros
+            centroid = np.sum(freqs[:, np.newaxis] * magnitude, axis=0) / magnitude_sum
+            # Clip centroid to reasonable bounds and handle NaN/inf
+            centroid = np.clip(centroid, freqs[1], freqs[-1])  # Between min and max freq
+            centroid = np.nan_to_num(centroid, nan=1000.0, posinf=freqs[-1], neginf=freqs[1])
+            
             for i, freq in enumerate(freqs):
-                scaling = 1 + shift * (freq / (centroid + 1e-8))
+                scaling = 1 + shift * (freq / (centroid + 1e-6))
                 magnitude[i] *= np.clip(scaling, 0.1, 10.0)
         
         if transforms.get('frequency_mask_low') or transforms.get('frequency_mask_high'):
@@ -382,7 +470,18 @@ class AudMixMod:
             magnitude[~mask] *= 0.01
         
         stft_modified = magnitude * np.exp(1j * phase)
-        return librosa.istft(stft_modified, hop_length=self.hop_length)
+        reconstructed = librosa.istft(stft_modified, hop_length=self.hop_length)
+        
+        # Ensure output length matches input length exactly
+        if len(reconstructed) != original_length:
+            if len(reconstructed) > original_length:
+                reconstructed = reconstructed[:original_length]
+            else:
+                # Pad with zeros if shorter
+                pad_length = original_length - len(reconstructed)
+                reconstructed = np.pad(reconstructed, (0, pad_length), mode='constant')
+        
+        return reconstructed
     
     def extract_onset_times(self, audio: np.ndarray) -> np.ndarray:
         """Extract note onset times from audio (handles stereo by converting to mono for analysis)"""
@@ -510,12 +609,16 @@ class AudMixMod:
             feature_values = features[feature_name]
             if isinstance(feature_values[0], list):  # Multi-dimensional features
                 feature_array = np.array(feature_values)
-                features[f'{feature_name}_mean'] = np.mean(feature_array, axis=1).tolist()
-                features[f'{feature_name}_std'] = np.std(feature_array, axis=1).tolist()
+                # Ensure proper JSON serialization with explicit type conversion
+                features[f'{feature_name}_mean'] = [float(x) for x in np.mean(feature_array, axis=1)]
+                features[f'{feature_name}_std'] = [float(x) for x in np.std(feature_array, axis=1)]
             else:  # Single-dimensional features
                 feature_array = np.array(feature_values[0])  # Take first row for single-dim features
-                features[f'{feature_name}_mean'] = float(np.mean(feature_array))
-                features[f'{feature_name}_std'] = float(np.std(feature_array))
+                # Robust type conversion with NaN handling
+                mean_val = np.mean(feature_array)
+                std_val = np.std(feature_array)
+                features[f'{feature_name}_mean'] = float(np.nan_to_num(mean_val, nan=0.0))
+                features[f'{feature_name}_std'] = float(np.nan_to_num(std_val, nan=0.0))
         
         return features
     
@@ -1070,6 +1173,43 @@ class AudMixMod:
                 self.generate_analysis_report(notes, tempo, key_sig, chords, file_path, report_path,
                                             timbre_features, rhythm_analysis)
             
+            # AI Analysis and Processing
+            if self.ai_processor and self.ai_processor.is_available():
+                if self.config.get('ai_analyze'):
+                    if self.config.get('verbose'):
+                        print("Running AI analysis...")
+                    analysis_data = {
+                        'tempo': tempo,
+                        'key': f"{key_sig[0]} {key_sig[1]}",
+                        'duration': self.processing_stats.get('duration', 0),
+                        'notes': notes,
+                        'timbre_features': timbre_features,
+                        'rhythm_analysis': rhythm_analysis
+                    }
+                    ai_analysis = self.ai_processor.analyze_audio_with_ai(analysis_data, 
+                                                                         self.config.get('ai_prompt'))
+                    print(f"\n\033[1;36m🤖 AI Analysis:\033[0m\n{ai_analysis}\n")
+                    
+                    # Save AI analysis
+                    with open(os.path.join(output_dir, f"{filename}_ai_analysis.txt"), 'w') as f:
+                        f.write(ai_analysis)
+            
+            # 🎵 DARUNIA MODE ACTIVATION 🎵
+            if self.config.get('darunia_mode'):
+                if self.config.get('verbose'):
+                    print("Brother... prepare yourself for PURE BLISS...")
+                # Gather all transformation data for Darunia's assessment
+                applied_transforms = transforms or {}
+                analysis_for_darunia = {
+                    'tempo': tempo,
+                    'key': f"{key_sig[0]} {key_sig[1]}",
+                    'duration': self.processing_stats.get('duration', 0),
+                    'notes_count': len(notes)
+                }
+                if not self.ai_processor:
+                    self.ai_processor = AIProcessor(self.config)  # Create minimal instance for Darunia
+                self.ai_processor.darunia_mode(analysis_for_darunia, applied_transforms)
+            
             # Set output path for return value
             output_path = os.path.join(output_dir, f"{filename}.musicxml")
             
@@ -1115,8 +1255,11 @@ class AudMixMod:
         """Save the processed audio to specified output directory with appropriate filename, preserving format characteristics"""
         file_name = os.path.basename(original_file_path)
         name_without_ext, original_ext = os.path.splitext(file_name)
+        # Sanitize filename for cross-platform compatibility
+        name_without_ext = self._sanitize_filename(name_without_ext)
         
         if suffix:
+            suffix = self._sanitize_filename(suffix)
             processed_filename = f"{name_without_ext}.{self.sample_rate}.{suffix}.wav"
         else:
             processed_filename = f"{name_without_ext}.{self.sample_rate}.wav"
@@ -1690,6 +1833,9 @@ class AudMixMod:
         if rhythm_analysis:
             json_data['rhythm_analysis'] = rhythm_analysis
         
+        # Ensure all data is JSON serializable
+        json_data = self._ensure_json_serializable(json_data)
+        
         with open(f"{base_path}.json", 'w') as f:
             json.dump(json_data, f, indent=2)
     
@@ -2038,8 +2184,10 @@ NOTE DISTRIBUTION
             
             with ProcessPoolExecutor(max_workers=max_workers) as executor:
                 futures = []
+                # Prepare arguments for static method to avoid state contamination
                 for file_path in files:
-                    future = executor.submit(self._process_single_file, file_path, output_dir, transforms)
+                    args_tuple = (file_path, output_dir, transforms, self.config.copy(), self.sample_rate)
+                    future = executor.submit(AudMixMod._process_single_file_static, args_tuple)
                     futures.append((file_path, future))
                 
                 for file_path, future in futures:
@@ -2061,6 +2209,21 @@ NOTE DISTRIBUTION
         filename = os.path.splitext(os.path.basename(file_path))[0]
         
         return self.process_audio_file(
+            file_path=file_path,
+            output_dir=output_dir,
+            filename_prefix=filename,
+            transforms=transforms
+        )
+    
+    @staticmethod
+    def _process_single_file_static(args_tuple):
+        """Static method for multiprocessing to avoid state contamination"""
+        file_path, output_dir, transforms, config, sample_rate = args_tuple
+        filename = os.path.splitext(os.path.basename(file_path))[0]
+        
+        # Create a fresh instance for this process
+        processor = AudMixMod(sample_rate=sample_rate, config=config)
+        return processor.process_audio_file(
             file_path=file_path,
             output_dir=output_dir,
             filename_prefix=filename,
@@ -2145,6 +2308,567 @@ NOTE DISTRIBUTION
             if self.config.get('verbose'):
                 print(f"Webhook notification failed: {e}")
 
+class AIProvider:
+    """Base class for AI providers"""
+    def __init__(self, config: Dict):
+        self.config = config
+        self.verbose = config.get('verbose', False)
+        self.conversation_id = None  # For stateful conversations
+        
+    def is_available(self) -> bool:
+        """Check if this provider is available"""
+        raise NotImplementedError
+        
+    def analyze_audio(self, prompt: str) -> str:
+        """Analyze audio with AI"""
+        raise NotImplementedError
+        
+    def _extract_conversation_id(self, response_data: Dict) -> str:
+        """Extract conversation_id from response if present"""
+        return response_data.get('conversation_id')
+        
+    def _add_conversation_id(self, request_data: Dict) -> Dict:
+        """Add conversation_id to request if we have one"""
+        if self.conversation_id:
+            request_data['conversation_id'] = self.conversation_id
+        return request_data
+
+class AnthropicProvider(AIProvider):
+    """Anthropic/Claude provider"""
+    def __init__(self, config: Dict):
+        super().__init__(config)
+        self.client = None
+        self.model_name = config.get('model_name', 'claude-3-sonnet-20240229')
+        self._initialize()
+        
+    def _initialize(self):
+        if not anthropic:
+            return
+            
+        api_key = os.getenv('ANTHROPIC_API_KEY') or os.getenv('CLAUDE_API_KEY')
+        api_base = os.getenv('ANTHROPIC_API_BASE')
+        
+        if api_key:
+            if api_base:
+                self.client = anthropic.Anthropic(api_key=api_key, base_url=api_base)
+                if self.verbose:
+                    print(f"✓ Anthropic client initialized with custom base: {api_base}")
+            else:
+                self.client = anthropic.Anthropic(api_key=api_key)
+                if self.verbose:
+                    print("✓ Anthropic client initialized (official API)")
+                    
+    def is_available(self) -> bool:
+        return self.client is not None
+        
+    def analyze_audio(self, prompt: str) -> str:
+        if not self.is_available():
+            return "Anthropic provider not available"
+            
+        try:
+            # Prepare request with optional conversation_id
+            request_data = {
+                "model": self.model_name,
+                "max_tokens": 1000,
+                "messages": [{"role": "user", "content": prompt}]
+            }
+            request_data = self._add_conversation_id(request_data)
+            
+            response = self.client.messages.create(**request_data)
+            
+            # Extract conversation_id if present
+            if hasattr(response, '__dict__'):
+                self.conversation_id = self._extract_conversation_id(response.__dict__)
+                
+            return response.content[0].text
+        except Exception as e:
+            return f"Anthropic analysis error: {e}"
+
+class OpenAIProvider(AIProvider):
+    """OpenAI provider with Custom GPT support"""
+    def __init__(self, config: Dict):
+        super().__init__(config)
+        self.client = None
+        self.model_name = config.get('model_name', 'gpt-4')
+        self.is_custom_gpt = self._detect_custom_gpt(self.model_name)
+        self._initialize()
+        
+    def _detect_custom_gpt(self, model_name: str) -> bool:
+        """Detect if model is a Custom GPT based on naming pattern"""
+        import re
+        pattern = r'^gpt-4[a-zA-Z0-9-]*-gizmo-g-[a-zA-Z0-9]+'
+        return bool(re.match(pattern, model_name))
+        
+    def _initialize(self):
+        if not openai:
+            return
+            
+        api_key = os.getenv('OPENAI_API_KEY')
+        api_base = os.getenv('OPENAI_API_BASE')
+        
+        if api_key:
+            if api_base:
+                self.client = openai.OpenAI(api_key=api_key, base_url=api_base)
+                if self.verbose:
+                    print(f"✓ OpenAI client initialized with custom base: {api_base}")
+            else:
+                self.client = openai.OpenAI(api_key=api_key)
+                if self.verbose:
+                    print("✓ OpenAI client initialized (official API)")
+                    
+            if self.is_custom_gpt and self.verbose:
+                print(f"✓ Detected Custom GPT: {self.model_name}")
+                
+    def is_available(self) -> bool:
+        return self.client is not None
+        
+    def _initialize_custom_gpt(self) -> bool:
+        """Initialize Custom GPT if needed"""
+        if not self.is_custom_gpt:
+            return True
+            
+        try:
+            # Custom GPTs might need initialization - this is a placeholder
+            # for any special initialization logic
+            if self.verbose:
+                print(f"Initializing Custom GPT: {self.model_name}")
+            return True
+        except Exception as e:
+            if self.verbose:
+                print(f"Custom GPT initialization failed: {e}")
+            return False
+            
+    def analyze_audio(self, prompt: str) -> str:
+        if not self.is_available():
+            return "OpenAI provider not available"
+            
+        try:
+            # Initialize Custom GPT if needed
+            if self.is_custom_gpt and not self._initialize_custom_gpt():
+                return "Custom GPT initialization failed"
+                
+            # Prepare request with optional conversation_id
+            request_data = {
+                "model": self.model_name,
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": 1000
+            }
+            request_data = self._add_conversation_id(request_data)
+            
+            response = self.client.chat.completions.create(**request_data)
+            
+            # Extract conversation_id if present
+            if hasattr(response, '__dict__'):
+                self.conversation_id = self._extract_conversation_id(response.__dict__)
+                
+            return response.choices[0].message.content
+        except Exception as e:
+            return f"OpenAI analysis error: {e}"
+
+class LocalProvider(AIProvider):
+    """Local LLM provider (llama.cpp compatible)"""
+    def __init__(self, config: Dict):
+        super().__init__(config)
+        self.client = None
+        self.model_name = config.get('model_name', 'llama')
+        self.api_base = os.getenv('OPENAI_API_BASE', 'http://localhost:8080')
+        self._initialize()
+        
+    def _initialize(self):
+        if not openai:
+            return
+            
+        try:
+            # Use OpenAI client with local endpoint
+            self.client = openai.OpenAI(
+                api_key="local",  # llama.cpp doesn't need real key
+                base_url=self.api_base
+            )
+            if self.verbose:
+                print(f"✓ Local LLM client initialized: {self.api_base}")
+        except Exception as e:
+            if self.verbose:
+                print(f"Local LLM initialization failed: {e}")
+                
+    def is_available(self) -> bool:
+        return self.client is not None
+        
+    def analyze_audio(self, prompt: str) -> str:
+        if not self.is_available():
+            return "Local LLM provider not available"
+            
+        try:
+            request_data = {
+                "model": self.model_name,
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": 1000
+            }
+            request_data = self._add_conversation_id(request_data)
+            
+            response = self.client.chat.completions.create(**request_data)
+            
+            # Extract conversation_id if present
+            if hasattr(response, '__dict__'):
+                self.conversation_id = self._extract_conversation_id(response.__dict__)
+                
+            return response.choices[0].message.content
+        except Exception as e:
+            return f"Local LLM analysis error: {e}"
+
+class CustomProvider(AIProvider):
+    """Custom provider with full configurability"""
+    def __init__(self, config: Dict):
+        super().__init__(config)
+        self.client = None
+        self.model_name = config.get('model_name', 'custom-model')
+        self.provider_config = self._load_custom_config()
+        self._initialize()
+        
+    def _load_custom_config(self) -> Dict:
+        """Load custom provider configuration from env vars or files"""
+        config = {}
+        
+        # Load from environment variables
+        for key, value in os.environ.items():
+            if key.startswith('CUSTOM_AI_'):
+                config_key = key[10:].lower()  # Remove CUSTOM_AI_ prefix
+                config[config_key] = value
+                
+        # Load from config file if specified
+        config_file = os.getenv('CUSTOM_AI_CONFIG_FILE')
+        if config_file and os.path.exists(config_file):
+            try:
+                import json
+                with open(config_file, 'r') as f:
+                    file_config = json.load(f)
+                config.update(file_config)
+            except Exception as e:
+                if self.verbose:
+                    print(f"Failed to load custom config file: {e}")
+                    
+        return config
+        
+    def _initialize(self):
+        api_key = self.provider_config.get('api_key') or os.getenv('CUSTOM_AI_API_KEY')
+        api_base = self.provider_config.get('api_base') or os.getenv('CUSTOM_AI_API_BASE')
+        
+        if not api_key or not api_base:
+            if self.verbose:
+                print("Custom provider requires CUSTOM_AI_API_KEY and CUSTOM_AI_API_BASE")
+            return
+            
+        try:
+            # Use OpenAI-compatible client for custom endpoints
+            self.client = openai.OpenAI(api_key=api_key, base_url=api_base)
+            if self.verbose:
+                print(f"✓ Custom provider initialized: {api_base}")
+        except Exception as e:
+            if self.verbose:
+                print(f"Custom provider initialization failed: {e}")
+                
+    def is_available(self) -> bool:
+        return self.client is not None
+        
+    def analyze_audio(self, prompt: str) -> str:
+        if not self.is_available():
+            return "Custom provider not available"
+            
+        try:
+            request_data = {
+                "model": self.model_name,
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": 1000
+            }
+            
+            # Add any custom request parameters
+            for key, value in self.provider_config.items():
+                if key.startswith('request_'):
+                    param_name = key[8:]  # Remove request_ prefix
+                    request_data[param_name] = value
+                    
+            request_data = self._add_conversation_id(request_data)
+            
+            response = self.client.chat.completions.create(**request_data)
+            
+            # Extract conversation_id if present
+            if hasattr(response, '__dict__'):
+                self.conversation_id = self._extract_conversation_id(response.__dict__)
+                
+            return response.choices[0].message.content
+        except Exception as e:
+            return f"Custom provider analysis error: {e}"
+
+class AIProcessor:
+    """Enhanced AI processor with flexible provider support"""
+    
+    def __init__(self, config: Dict):
+        self.config = config
+        self.verbose = config.get('verbose', False)
+        self.provider = None
+        self.ai_enabled = config.get('ai_enabled', False)
+        
+        if self.ai_enabled:
+            self._initialize_provider()
+    
+    def _get_provider_type(self) -> str:
+        """Determine which provider to use"""
+        # Command line flag takes precedence
+        if self.config.get('ai_model'):
+            model_map = {
+                'claude': 'anthropic',
+                'openai': 'openai',
+                'chatgpt': 'openai'
+            }
+            return model_map.get(self.config['ai_model'], self.config['ai_model'])
+            
+        # Environment variable
+        provider = os.getenv('MODEL_PROVIDER', '').lower()
+        if provider in ['chatgpt', 'openai']:
+            return 'openai'
+        elif provider in ['claude.ai', 'anthropic']:
+            return 'anthropic'
+        elif provider == 'local':
+            return 'local'
+        elif provider == 'custom':
+            return 'custom'
+            
+        # Auto-detect based on available keys
+        if os.getenv('ANTHROPIC_API_KEY') or os.getenv('CLAUDE_API_KEY'):
+            return 'anthropic'
+        elif os.getenv('OPENAI_API_KEY'):
+            return 'openai'
+        elif os.getenv('CUSTOM_AI_API_KEY'):
+            return 'custom'
+            
+        return 'anthropic'  # Default fallback
+    
+    def _initialize_provider(self):
+        """Initialize the appropriate AI provider"""
+        provider_type = self._get_provider_type()
+        
+        # Get model name from environment or config
+        model_name = os.getenv('MODEL_NAME') or self.config.get('model_name')
+        provider_config = self.config.copy()
+        if model_name:
+            provider_config['model_name'] = model_name
+            
+        try:
+            if provider_type == 'anthropic':
+                self.provider = AnthropicProvider(provider_config)
+            elif provider_type == 'openai':
+                self.provider = OpenAIProvider(provider_config)
+            elif provider_type == 'local':
+                self.provider = LocalProvider(provider_config)
+            elif provider_type == 'custom':
+                self.provider = CustomProvider(provider_config)
+            else:
+                if self.verbose:
+                    print(f"Unknown provider type: {provider_type}")
+                    
+            if self.provider and self.verbose:
+                provider_name = provider_config.get('model_name', 'default')
+                print(f"✓ AI Provider initialized: {provider_type} ({provider_name})")
+                
+        except Exception as e:
+            if self.verbose:
+                print(f"AI provider initialization error: {e}")
+    
+    def is_available(self, provider: str = 'any') -> bool:
+        """Check if AI services are available"""
+        if not self.provider:
+            return False
+            
+        if provider == 'any':
+            return self.provider.is_available()
+        else:
+            # Check if current provider matches requested type
+            provider_type = self._get_provider_type()
+            if provider in ['claude', 'anthropic'] and provider_type == 'anthropic':
+                return self.provider.is_available()
+            elif provider in ['openai', 'chatgpt'] and provider_type == 'openai':
+                return self.provider.is_available()
+            elif provider == 'local' and provider_type == 'local':
+                return self.provider.is_available()
+            elif provider == 'custom' and provider_type == 'custom':
+                return self.provider.is_available()
+            else:
+                return False
+    
+    def analyze_audio_with_ai(self, audio_analysis: Dict, prompt: str = None) -> str:
+        """Get AI analysis of audio characteristics"""
+        if not self.is_available():
+            return "AI analysis not available (no providers configured or available)"
+        
+        default_prompt = f"""
+        Analyze this audio data and provide insights about the musical content:
+        
+        Tempo: {audio_analysis.get('tempo', 'unknown')} BPM
+        Key: {audio_analysis.get('key', 'unknown')}
+        Duration: {audio_analysis.get('duration', 'unknown')} seconds
+        Notes detected: {len(audio_analysis.get('notes', []))}
+        
+        Describe what you hear and suggest creative processing ideas.
+        """
+        
+        analysis_prompt = prompt or default_prompt
+        return self.provider.analyze_audio(analysis_prompt)
+    
+    def darunia_mode(self, audio_analysis: Dict, transformations_applied: Dict) -> None:
+        """🎵 DARUNIA MODE: The Goron King grooves to your audio! 🎵"""
+        import time
+        import random
+        
+        # Darunia's dancing phases
+        dance_frames = [
+            """\033[32m
+        🎵  ♪ ♫ ♪ ♫  🎵
+       ╔═══════════════╗
+    🔥 ║  DARUNIA THE  ║ 🔥
+       ║  GORON KING   ║
+       ╚═══════════════╝
+         ╔═══════════╗
+         ║ (◔ ◡ ◔)   ║  Brother! This
+         ║  \\  o  //   ║  sound makes my
+         ║   \\ _ //    ║  soul DANCE!
+         ╚═══════════╝
+          /|\\   /|\\
+         🏔️     🏔️
+    \033[0m""",
+            
+            """\033[33m
+        🎶  ♪ ♫ ♪ ♫  🎶
+       ╔═══════════════╗
+    🔥 ║  DARUNIA THE  ║ 🔥
+       ║  GORON KING   ║
+       ╚═══════════════╝
+         ╔═══════════╗
+         ║ (◕ ‿ ◕)   ║  The rhythm
+         ║    |o|     ║  flows through
+         ║   // \\\\    ║  my rocky heart!
+         ╚═══════════╝
+          🏔️\\   //🏔️
+         ~~\\     //~~
+    \033[0m""",
+            
+            """\033[35m
+        🎵  ♪ ♫ ♪ ♫  🎵
+       ╔═══════════════╗
+    🔥 ║  DARUNIA THE  ║ 🔥
+       ║  GORON KING   ║
+       ╚═══════════════╝
+         ╔═══════════╗
+         ║ (★ ω ★)   ║  PURE BLISS,
+         ║   \\|o|//   ║  Brother! This
+         ║    \\o//    ║  is NIRVANA!
+         ╚═══════════╝
+            |   |
+         🏔️ ~~|~~🏔️
+    \033[0m""",
+            
+            """\033[36m
+        🎶  ♪ ♫ ♪ ♫  🎶
+       ╔═══════════════╗
+    🔥 ║  DARUNIA THE  ║ 🔥
+       ║  GORON KING   ║
+       ╚═══════════════╝
+         ╔═══════════╗
+         ║ (◉ ◡ ◉)   ║  My socks have
+         ║    |o|     ║  ASCENDED to
+         ║   /| |\\    ║  Saturn! 🪐
+         ╚═══════════╝
+          //   \\\\
+         🏔️     🏔️
+    \033[0m"""
+        ]
+        
+        # Darunia's ecstatic proclamations
+        proclamations = [
+            "Brother! This groove has awakened my GORON SOUL!",
+            "By the sacred stones! My very essence VIBRATES with joy!",
+            "This sound... it's like liquid fire flowing through Death Mountain!",
+            "Brother, you've created PURE AUDITORY BLISS!",
+            "My rocky heart is MELTING with euphoria!",
+            "This is better than a thousand rolling competitions!",
+            "The spirits of the ancient Gorons are dancing in my bones!",
+            "Brother! You've unlocked the SECRET FREQUENCY OF HAPPINESS!"
+        ]
+        
+        # Calculate bliss intensity based on transformations
+        bliss_intensity = 1
+        if transformations_applied.get('time_stretch', 1.0) != 1.0:
+            bliss_intensity += 0.5
+        if transformations_applied.get('pitch_shift', 0) != 0:
+            bliss_intensity += 0.3
+        if transformations_applied.get('harmonic_only'):
+            bliss_intensity += 0.4
+        if transformations_applied.get('granular_synthesis'):
+            bliss_intensity += 0.8
+        
+        # Start the show with proper spacing
+        print("\n" + "="*60)
+        print("\033[1;32m🎵 DARUNIA MODE ACTIVATED! 🎵\033[0m")
+        print("="*60 + "\n")
+        time.sleep(1)
+        
+        # Dancing animation - pure append mode, no cursor tricks!
+        for i in range(int(bliss_intensity * 2)):  # Reduced iterations for speed
+            frame = dance_frames[i % len(dance_frames)]
+            proclamation = random.choice(proclamations)
+            
+            print(f"\033[1;36m--- DANCE FRAME {i+1} ---\033[0m")
+            print(frame)
+            print(f"\033[1;33m{proclamation}\033[0m")
+            print("\n" + "-"*50 + "\n")
+            time.sleep(0.6)  # Slightly faster
+        
+        # Final wisdom section
+        print("""\033[1;36m
+       ╔═══════════════════════════════╗
+    🔥 ║     DARUNIA'S WISDOM         ║ 🔥
+       ╚═══════════════════════════════╝
+         ╔═════════════════════════╗
+         ║ (◕ ◡ ◕) Thank you,     ║  
+         ║          Brother!       ║  
+         ║   Two tips for you:     ║  
+         ╚═════════════════════════╝
+    \033[0m""")
+        
+        # Generate contextual tips based on what they did
+        tips = []
+        if transformations_applied.get('harmonic_only'):
+            tips.append("🎵 Try combining --harmonic-only with --spectral-centroid-shift 0.3 for celestial shimmer!")
+        else:
+            tips.append("🎵 For ethereal vibes, try --harmonic-only --time-stretch 2.0!")
+            
+        if transformations_applied.get('granular_synthesis'):
+            tips.append("🎶 Granular synthesis + pitch shifting = interdimensional portal sounds!")
+        else:
+            tips.append("🎶 Add --granular-synthesis for textures that'll make your ears tingle!")
+            
+        if not tips:
+            tips = [
+                "🎵 Try --random-transform for a surprise journey through sonic dimensions!",
+                "🎶 Use --ai-enhance='make it sound underwater' for aquatic adventures!"
+            ]
+        
+        for tip in tips[:2]:
+            print(f"\033[1;32m{tip}\033[0m")
+            time.sleep(1.5)
+        
+        print("\n\033[1;35m🎉 Darunia: 'I'm off to the races, Brother! May your audio adventures be LEGENDARY!' ✨🌟✨\033[0m")
+        time.sleep(1)
+        
+        # Simple sparkly exit - no overwriting!
+        sparkles = "✨🌟⭐💫✨🌟⭐💫✨🌟⭐💫"
+        print("\n🎆 Grand Finale: ", end='')
+        for sparkle in sparkles:
+            print(f"\033[1;{random.randint(31,37)}m{sparkle}\033[0m", end='', flush=True)
+            time.sleep(0.05)  # Faster sparkles
+        
+        print("\n\n\033[1;32m🎵 *POOF* 🎵\033[0m")
+        print("\n🎆 Darunia fades away with a satisfied grin. Your output is safe, Brother! 🎆")
+        print("\n" + "="*60 + "\n")
+
 def create_random_transforms() -> Dict:
     """Generate random transformation parameters for experimentation"""
     transforms = {}
@@ -2188,6 +2912,15 @@ Examples:
   %(prog)s --watch-folder /dropbox/music /output       # Auto-process new files
   %(prog)s song.wav --random-transform                 # Random effects
   %(prog)s song.wav --timbre-features-json --generate-cqt --piano-roll-png  # AI hearing features
+  %(prog)s song.wav --ai-enabled --ai-analyze          # AI analysis (needs ANTHROPIC_API_KEY or OPENAI_API_KEY)
+  %(prog)s song.wav --darunia-mode                     # 🎵 PURE BLISS EXPERIENCE 🎵
+  
+  # AI Provider Examples:
+  # export MODEL_PROVIDER="openai" MODEL_NAME="gpt-4-turbo"
+  # export MODEL_PROVIDER="custom" CUSTOM_AI_API_BASE="https://my-llm.com/v1"
+  %(prog)s song.wav --ai-enabled --ai-model custom --custom-ai-api-base "http://localhost:1234/v1"
+  %(prog)s song.wav --ai-enabled --model-name "gpt-4o-gizmo-g-my-audio-gpt" --ai-analyze  # Custom GPT
+  %(prog)s song.wav --ai-enabled --model-provider local --model-name "llama-3" --ai-analyze  # Local LLM
         '''
     )
     
@@ -2348,6 +3081,40 @@ Examples:
     parser.add_argument('--webhook-notify', help='Webhook URL for completion notifications')
     parser.add_argument('--upload-to-cloud', help='Cloud storage URL for auto-upload')
     
+    # AI Features 🤖
+    parser.add_argument('--ai-enabled', action='store_true',
+                       help='Enable AI-powered features (requires API keys in env vars)')
+    parser.add_argument('--ai-analyze', action='store_true',
+                       help='Get AI analysis of the audio content')
+    parser.add_argument('--ai-prompt', 
+                       help='Custom prompt for AI analysis')
+    parser.add_argument('--ai-model', choices=['claude', 'openai', 'chatgpt', 'anthropic', 'local', 'custom'], 
+                       default='claude', help='AI model provider (default: claude)')
+    parser.add_argument('--model-name', dest='model_name',
+                       help='Specific model name (e.g., gpt-4, claude-3-sonnet-20240229, or Custom GPT name)')
+    parser.add_argument('--model-provider', dest='model_provider',
+                       choices=['chatgpt', 'openai', 'claude.ai', 'anthropic', 'local', 'custom'],
+                       help='Override MODEL_PROVIDER env var')
+    parser.add_argument('--darunia-mode', action='store_true',
+                       help='🎵 DARUNIA MODE: The Goron King celebrates your audio! 🎵')
+    
+    # Custom AI Provider Configuration
+    parser.add_argument('--custom-ai-api-key', dest='custom_ai_api_key', help='Custom AI provider API key')
+    parser.add_argument('--custom-ai-api-base', dest='custom_ai_api_base', help='Custom AI provider base URL')
+    parser.add_argument('--custom-ai-config-file', dest='custom_ai_config_file', help='Custom AI provider config file (JSON)')
+    
+    # Environment Variables for AI:
+    # MODEL_PROVIDER - Provider type: chatgpt, openai, claude.ai, anthropic, local, custom
+    # MODEL_NAME - Specific model name (supports Custom GPTs: gpt-4*-gizmo-g-*)
+    # ANTHROPIC_API_KEY or CLAUDE_API_KEY - Your Anthropic API key
+    # ANTHROPIC_API_BASE - Custom API base URL (optional, defaults to official Anthropic API)
+    # OPENAI_API_KEY - Your OpenAI API key  
+    # OPENAI_API_BASE - Custom API base URL (optional, defaults to https://api.openai.com/v1)
+    # CUSTOM_AI_API_KEY - Custom provider API key
+    # CUSTOM_AI_API_BASE - Custom provider base URL
+    # CUSTOM_AI_CONFIG_FILE - Path to custom provider config JSON file
+    # CUSTOM_AI_* - Any env var starting with CUSTOM_AI_ becomes a config parameter
+    
     args = parser.parse_args()
     
     # Load configuration file if specified
@@ -2359,6 +3126,18 @@ Examples:
     for key, value in vars(args).items():
         if value is not None:
             config[key] = value
+    
+    # Handle custom AI provider command line overrides
+    if args.model_provider:
+        os.environ['MODEL_PROVIDER'] = args.model_provider
+    if args.model_name:
+        config['model_name'] = args.model_name
+    if args.custom_ai_api_key:
+        os.environ['CUSTOM_AI_API_KEY'] = args.custom_ai_api_key
+    if args.custom_ai_api_base:
+        os.environ['CUSTOM_AI_API_BASE'] = args.custom_ai_api_base
+    if args.custom_ai_config_file:
+        os.environ['CUSTOM_AI_CONFIG_FILE'] = args.custom_ai_config_file
     
     # Handle special modes
     if args.watch_folder:
@@ -2457,6 +3236,8 @@ Examples:
             'generate_mel_spectrogram': True,
             'piano_roll_png': True,
             'audio_thumbnail': True,
+            # AI features (if enabled)
+            'ai_analyze': args.ai_enabled,
         })
     
     try:

@@ -24,6 +24,8 @@
 - **Rhythm Intelligence**: Advanced rhythm analysis with tempo stability metrics
 - **Texture Recognition**: Zero-crossing rate analysis, spectral contrast, tonnetz features
 - **Musical Intelligence**: Automated chord detection, key analysis, beat tracking
+- **AI-Powered Analysis**: Claude/OpenAI integration for intelligent audio insights
+- **Darunia Mode**: 🎵 Epic Goron King celebration mode! 🎵
 
 ### Visualizations & Analysis
 - **Waveform Visualization**: High-resolution stereo/mono waveform plots
@@ -45,6 +47,66 @@
 ```bash
 pip install librosa soundfile numpy scipy matplotlib
 pip install mido  # Optional: for MIDI export
+pip install anthropic openai  # Optional: for AI features
+```
+
+### Environment Variables (Optional)
+For AI-powered features, configure your provider and credentials:
+
+#### Basic Setup
+```bash
+# Choose your AI provider
+export MODEL_PROVIDER="anthropic"  # or: openai, chatgpt, claude.ai, local, custom
+export MODEL_NAME="claude-3-sonnet-20240229"  # or: gpt-4, gpt-4-turbo, etc.
+
+# Anthropic/Claude API (recommended)
+export ANTHROPIC_API_KEY="sk-ant-your-key-here"
+export ANTHROPIC_API_BASE="https://api.anthropic.com"  # Optional: custom endpoint
+
+# OpenAI API (alternative)
+export OPENAI_API_KEY="sk-your-key-here" 
+export OPENAI_API_BASE="https://api.openai.com/v1"  # Optional: custom endpoint
+```
+
+#### Advanced Provider Configuration
+
+**Local LLM (llama.cpp, Ollama, etc.):**
+```bash
+export MODEL_PROVIDER="local"
+export MODEL_NAME="llama-3"
+export OPENAI_API_BASE="http://localhost:1234/v1"  # Your local LLM endpoint
+```
+
+**Custom GPT (ChatGPT with custom instructions):**
+```bash
+export MODEL_PROVIDER="openai"
+export MODEL_NAME="gpt-4o-gizmo-g-abc123def456"  # Your Custom GPT ID
+export OPENAI_API_KEY="sk-your-key-here"
+```
+
+**Custom Provider (any OpenAI-compatible API):**
+```bash
+export MODEL_PROVIDER="custom"
+export MODEL_NAME="my-custom-model"
+export CUSTOM_AI_API_KEY="your-custom-api-key"
+export CUSTOM_AI_API_BASE="https://my-ai-service.com/v1"
+# Add any custom parameters:
+export CUSTOM_AI_REQUEST_TEMPERATURE="0.7"
+export CUSTOM_AI_REQUEST_TOP_P="0.9"
+```
+
+**Custom Provider via Config File:**
+```bash
+export CUSTOM_AI_CONFIG_FILE="/path/to/ai-config.json"
+```
+
+```json
+{
+  "api_key": "your-key",
+  "api_base": "https://your-endpoint.com",
+  "request_temperature": 0.7,
+  "request_max_tokens": 2000
+}
 ```
 
 ### Clone and Install
@@ -224,6 +286,156 @@ audmixmod.py [INPUT_FILE] [OPTIONS]
 | `--fade-in` | Fade in duration (seconds) | 0.1-10.0 |
 | `--fade-out` | Fade out duration (seconds) | 0.1-10.0 |
 | `--reverse` | Reverse the audio | Boolean |
+
+## 🤖 AI-Powered Features
+
+### Universal AI Provider Support
+Supports multiple AI providers with seamless switching:
+- **Anthropic Claude** - Official API with advanced reasoning
+- **OpenAI GPT** - Including GPT-4, GPT-4 Turbo, and Custom GPTs
+- **Local LLMs** - llama.cpp, Ollama, and OpenAI-compatible servers
+- **Custom Providers** - Any OpenAI-compatible API endpoint
+
+### AI Analysis
+Get intelligent insights about your audio:
+
+```bash
+# Basic AI analysis (uses configured provider)
+./audmixmod.py song.wav --ai-enabled --ai-analyze
+
+# Custom AI prompt
+./audmixmod.py song.wav --ai-enabled --ai-analyze \
+  --ai-prompt "Describe this audio as if you're a jazz musician"
+
+# Override provider and model for this session
+./audmixmod.py song.wav --ai-enabled --ai-analyze \
+  --model-provider openai --model-name gpt-4-turbo
+
+# Use a Custom GPT trained for audio analysis
+./audmixmod.py song.wav --ai-enabled --ai-analyze \
+  --model-name "gpt-4o-gizmo-g-MusicAnalyzer123"
+```
+
+### Custom GPT Support 🤖
+First-class support for ChatGPT Custom GPTs with conversation state:
+
+```bash
+# Use your specialized audio analysis Custom GPT
+export MODEL_NAME="gpt-4o-gizmo-g-YourAudioGPT"
+./audmixmod.py song.wav --ai-enabled --ai-analyze
+
+# Or specify directly via command line
+./audmixmod.py song.wav --ai-enabled --ai-analyze \
+  --model-name "gpt-4o-gizmo-g-AudioMaster456"
+```
+
+**Custom GPT Features:**
+- Automatic detection of Custom GPT naming pattern
+- Conversation state management with `conversation_id`
+- Special API handling for Custom GPT initialization
+- Support for all Custom GPT capabilities
+
+### Local LLM Integration 💻
+Run audio analysis completely offline with local models:
+
+```bash
+# Using llama.cpp server
+export MODEL_PROVIDER="local"
+export MODEL_NAME="llama-3-8b-instruct"
+export OPENAI_API_BASE="http://localhost:8080/v1"
+./audmixmod.py song.wav --ai-enabled --ai-analyze
+
+# Using Ollama
+export OPENAI_API_BASE="http://localhost:11434/v1"
+./audmixmod.py song.wav --ai-enabled --model-provider local \
+  --model-name "llama3:latest" --ai-analyze
+
+# One-shot command line usage
+./audmixmod.py song.wav --ai-enabled --ai-analyze \
+  --model-provider local --model-name "phi-3" \
+  --custom-ai-api-base "http://localhost:1234/v1"
+```
+
+### Custom AI Providers 🔧
+Integrate any OpenAI-compatible API:
+
+```bash
+# Anthropic via proxy
+./audmixmod.py song.wav --ai-enabled --ai-analyze \
+  --model-provider custom \
+  --custom-ai-api-base "https://my-proxy.com/anthropic" \
+  --custom-ai-api-key "proxy-key-123"
+
+# Commercial AI service
+export MODEL_PROVIDER="custom"
+export CUSTOM_AI_API_KEY="your-service-key"
+export CUSTOM_AI_API_BASE="https://api.customai.com/v1"
+export CUSTOM_AI_REQUEST_TEMPERATURE="0.3"  # Custom parameters
+./audmixmod.py song.wav --ai-enabled --ai-analyze
+
+# Using config file for complex setups
+echo '{
+  "api_key": "sk-custom-123",
+  "api_base": "https://my-ai.com/v1",
+  "request_temperature": 0.7,
+  "request_top_p": 0.9,
+  "request_max_tokens": 2000
+}' > ai-config.json
+
+./audmixmod.py song.wav --ai-enabled --ai-analyze \
+  --custom-ai-config-file ai-config.json
+```
+
+### Darunia Mode 🎵
+The ultimate audio celebration experience! The Goron King himself will dance to your audio:
+
+```bash
+# Basic Darunia Mode
+./audmixmod.py song.wav --darunia-mode
+
+# Enhanced bliss with transformations
+./audmixmod.py song.wav --harmonic-only --granular-synthesis --darunia-mode
+
+# Maximum bliss experience
+./audmixmod.py song.wav --time-stretch 2.0 --pitch-shift 7 \
+  --harmonic-only --granular-synthesis --darunia-mode
+```
+
+**What happens in Darunia Mode:**
+- Animated ANSI art of the Goron King dancing
+- Bliss intensity based on your transformations
+- Contextual tips for your next audio adventure
+- Sparkly exit sequence that'll make you question reality
+- Pure terminal magic, Brother!
+
+### AI Environment Setup
+```bash
+# Provider Selection
+export MODEL_PROVIDER="anthropic"     # anthropic, openai, chatgpt, claude.ai, local, custom
+export MODEL_NAME="claude-3-sonnet-20240229"  # Specific model name
+
+# Official APIs
+export ANTHROPIC_API_KEY="sk-ant-..."
+export OPENAI_API_KEY="sk-..."
+
+# Custom endpoints (proxy servers, local LLMs)
+export ANTHROPIC_API_BASE="https://my-proxy.com/anthropic"
+export OPENAI_API_BASE="https://my-local-llm.com/v1"
+
+# Custom provider configuration
+export CUSTOM_AI_API_KEY="your-custom-key"
+export CUSTOM_AI_API_BASE="https://my-ai-service.com/v1"
+export CUSTOM_AI_CONFIG_FILE="/path/to/config.json"
+
+# Custom GPT examples
+export MODEL_NAME="gpt-4o-gizmo-g-AudioAnalyzer123"  # Your Custom GPT
+export MODEL_NAME="gpt-4-turbo"                     # Standard GPT-4
+
+# Local LLM examples
+export MODEL_PROVIDER="local"
+export MODEL_NAME="llama-3-8b-instruct"
+export OPENAI_API_BASE="http://localhost:8080/v1"  # llama.cpp server
+```
 
 ## 🧠 AI Hearing Features
 
